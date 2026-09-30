@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:key": "set GEMINI_API_KEY=your_key&& tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },

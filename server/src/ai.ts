@@ -7,44 +7,65 @@ export class AiError extends Error {
   }
 }
 
-const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 let client: GoogleGenAI | null = null;
+let currentKey: string | null = null;
 
-function getClient() {
-  if (!process.env.GEMINI_API_KEY) {
+function getClient(): GoogleGenAI {
+  const rawKey = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || "";
+  const apiKey = rawKey.trim().replace(/^["']|["']$/g, "");
+  if (!apiKey) {
+    console.error("[Config Error] process.cwd():", process.cwd());
+    console.error("[AI Service Error] GEMINI_API_KEY is not set or is empty in server/.env.");
     throw new AiError("The AI service is not configured. Set GEMINI_API_KEY on the server.", 503);
   }
-  return (client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }));
+  if (!client || currentKey !== apiKey) {
+    client = new GoogleGenAI({ apiKey });
+    currentKey = apiKey;
+  }
+  return client;
 }
 
 type Turn = { role: "user" | "model"; parts: { text: string }[] };
 
 async function generate(system: string, contents: Turn[], json: boolean): Promise<string> {
-  try {
-    const res = await getClient().models.generateContent({
-      model,
-      contents,
-      config: {
-        systemInstruction: system,
-        temperature: json ? 0.3 : 0.6,
-        ...(json ? { responseMimeType: "application/json" } : {}),
-      },
-    });
-    const text = res.text?.trim();
-    if (!text) throw new AiError("The AI returned an empty response. Please try again.");
-    return text;
-  } catch (err) {
-    if (err instanceof AiError) throw err;
-    console.error("Gemini request failed:", err);
-    const status = (err as { status?: number }).status;
-    if (status === 429) {
-      throw new AiError("The AI service is rate limited right now. Wait a minute and try again.", 429);
+  const modelName = process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash";
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await getClient().models.generateContent({
+        model: modelName,
+        contents,
+        config: {
+          systemInstruction: system,
+          temperature: json ? 0.3 : 0.6,
+          ...(json ? { responseMimeType: "application/json" } : {}),
+        },
+      });
+      const text = res.text?.trim();
+      if (!text) throw new AiError("The AI returned an empty response. Please try again.");
+      return text;
+    } catch (err: any) {
+      if (err instanceof AiError) throw err;
+      lastErr = err;
+      const status = err?.status || err?.statusCode;
+      if ((status === 503 || status === 429) && attempt < 3) {
+        console.warn(`[Gemini Retry] Attempt ${attempt} failed with ${status}. Retrying in ${attempt}s...`);
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+        continue;
+      }
+      break;
     }
-    if (status === 400 || status === 401 || status === 403 || status === 404) {
-      throw new AiError("The AI service rejected the request. Check the API key and model name on the server.");
-    }
-    throw new AiError("The AI service is unavailable. Please try again shortly.");
   }
+
+  console.error("[Gemini Raw Error]:", lastErr?.status || lastErr?.statusCode || lastErr?.code, lastErr?.message || lastErr);
+  const status = lastErr?.status || lastErr?.statusCode;
+  if (status === 429 || status === 503) {
+    throw new AiError("The AI service is currently busy or rate limited. Wait a few seconds and try again.", 429);
+  }
+  if (status === 400 || status === 401 || status === 403 || status === 404) {
+    throw new AiError(`The AI service rejected the request (${status}: ${lastErr?.message || "Invalid request"}). Check the API key and model name on the server.`);
+  }
+  throw new AiError("The AI service is unavailable. Please try again shortly.");
 }
 
 // ---------- prompts ----------
