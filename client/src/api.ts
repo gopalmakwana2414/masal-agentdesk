@@ -6,10 +6,22 @@ export class ApiError extends Error {
   }
 }
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+function getEndpoint(path: string): string {
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  if (!API_BASE_URL) {
+    return cleanPath.startsWith("/api") ? cleanPath : `/api${cleanPath}`;
+  }
+  const rootUrl = API_BASE_URL.endsWith("/api") ? API_BASE_URL.slice(0, -4) : API_BASE_URL;
+  const fullPath = cleanPath.startsWith("/api") ? cleanPath : `/api${cleanPath}`;
+  return `${rootUrl}${fullPath}`;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, {
+    res = await fetch(getEndpoint(path), {
       ...init,
       headers: { "Content-Type": "application/json" },
     });
